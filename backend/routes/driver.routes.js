@@ -555,13 +555,19 @@ router.post('/location', async (req, res) => {
     await deliveryBoy.save();
 
     // Broadcast location to all tracking admin clients via WebSocket
-    const { sendToTrackingAdmins } = require('../websocket/websocket');
-    sendToTrackingAdmins({
+    const { sendToTrackingAdmins, broadcast } = require('../websocket/websocket');
+    const locationUpdate = {
       type: 'DRIVER_LOCATION_UPDATE',
       driverId: deliveryBoy._id,
       driverName: deliveryBoy.name,
       location: locationData
-    });
+    };
+    
+    // Send to tracking admins first (priority)
+    sendToTrackingAdmins(locationUpdate);
+    
+    // Also broadcast to all clients (for any page that might need it)
+    broadcast(locationUpdate);
 
     res.json({
       message: 'Location updated successfully',
@@ -573,6 +579,47 @@ router.post('/location', async (req, res) => {
       error: true,
       message: 'Failed to update location',
       code: 'UPDATE_LOCATION_ERROR'
+    });
+  }
+});
+
+// POST /api/driver/fcm-token - Register FCM token for push notifications
+router.post('/fcm-token', async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    const driverId = req.user.userId;
+
+    if (!fcmToken) {
+      return res.status(400).json({
+        error: true,
+        message: 'FCM token is required',
+        code: 'MISSING_TOKEN'
+      });
+    }
+
+    const deliveryBoy = await DeliveryBoy.findOne({ userId: driverId });
+    if (!deliveryBoy) {
+      return res.status(404).json({
+        error: true,
+        message: 'Delivery boy profile not found',
+        code: 'PROFILE_NOT_FOUND'
+      });
+    }
+
+    deliveryBoy.fcmToken = fcmToken;
+    await deliveryBoy.save();
+
+    console.log(`📱 FCM token registered for ${deliveryBoy.name}`);
+
+    res.json({
+      message: 'FCM token registered successfully'
+    });
+  } catch (error) {
+    console.error('Register FCM token error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to register FCM token',
+      code: 'FCM_TOKEN_ERROR'
     });
   }
 });

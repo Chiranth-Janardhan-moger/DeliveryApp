@@ -1,8 +1,27 @@
 const WebSocket = require('ws');
 
 let wss;
-const clients = new Map(); // oderId -> { ws, role, name }
+const clients = new Map(); // userId -> { ws, role, name }
 const adminClients = new Set(); // Track admin connections watching tracking page
+
+// Send FCM to all drivers (for background/killed apps)
+const sendFCMToAllDrivers = async () => {
+  try {
+    const DeliveryBoy = require('../models/DeliveryBoy');
+    const { sendLocationRequestToAll } = require('../utils/firebase');
+    
+    // Get all drivers with FCM tokens
+    const drivers = await DeliveryBoy.find({ fcmToken: { $exists: true, $ne: null } });
+    const tokens = drivers.map(d => d.fcmToken).filter(Boolean);
+    
+    if (tokens.length > 0) {
+      await sendLocationRequestToAll(tokens);
+      console.log(`📱 FCM sent to ${tokens.length} drivers`);
+    }
+  } catch (error) {
+    console.error('FCM broadcast error:', error.message);
+  }
+};
 
 const setupWebSocket = (server) => {
   wss = new WebSocket.Server({ server, path: '/ws' });
@@ -32,8 +51,11 @@ const setupWebSocket = (server) => {
           ws.isTrackingAdmin = true;
           console.log('📍 Admin started tracking - notifying all drivers');
           
-          // Notify all connected drivers to start sending location
+          // Notify connected drivers via WebSocket
           broadcastToDrivers({ type: 'START_TRACKING' });
+          
+          // Also send FCM for drivers with app in background
+          sendFCMToAllDrivers();
         }
         
         // Admin stops tracking

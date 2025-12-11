@@ -5,6 +5,7 @@ const http = require('http');
 const { connectDB } = require('./config/database');
 const { setupWebSocket } = require('./websocket/websocket');
 const { scheduleCleanup } = require('./utils/cleanup');
+const { initializeFirebase } = require('./utils/firebase');
 const authRoutes = require('./routes/auth.routes');
 const adminRoutes = require('./routes/admin.routes');
 const driverRoutes = require('./routes/driver.routes');
@@ -66,6 +67,9 @@ const HOST = '0.0.0.0';
 server.listen(PORT, HOST, () => {
   console.log(`Server running on ${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  // Initialize Firebase for push notifications
+  initializeFirebase();
   
   // Start the cleanup scheduler
   scheduleCleanup();

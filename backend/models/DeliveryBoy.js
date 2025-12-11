@@ -36,6 +36,10 @@ const deliveryBoySchema = new mongoose.Schema({
     longitude: Number,
     updatedAt: Date
   },
+  fcmToken: {
+    type: String,
+    default: null,
+  },
 }, {
   timestamps: true,
 });

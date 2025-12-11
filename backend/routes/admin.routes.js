@@ -10,6 +10,7 @@ const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { generateOrderId } = require('../utils/helpers');
 const { broadcastToDrivers, sendToUser } = require('../websocket/websocket');
 const { syncOrdersToSheet } = require('../utils/googleSheets');
+const { sendLocationRequestToAll } = require('../utils/firebase');
 
 // All admin routes require authentication and admin role
 router.use(authenticate);
@@ -308,6 +309,86 @@ router.get('/delivery-boys', async (req, res) => {
       error: true,
       message: 'Failed to get delivery boys',
       code: 'GET_DELIVERY_BOYS_ERROR'
+    });
+  }
+});
+
+// GET /api/admin/drivers-status - Debug endpoint to check driver FCM and location status
+router.get('/drivers-status', async (req, res) => {
+  try {
+    const deliveryBoys = await DeliveryBoy.find({});
+    
+    const status = deliveryBoys.map(d => ({
+      name: d.name,
+      phone: d.phone,
+      status: d.status,
+      hasFcmToken: !!d.fcmToken,
+      fcmTokenPreview: d.fcmToken ? d.fcmToken.substring(0, 20) + '...' : null,
+      hasLocation: !!d.lastLocation,
+      lastLocation: d.lastLocation ? {
+        lat: d.lastLocation.latitude,
+        lng: d.lastLocation.longitude,
+        updatedAt: d.lastLocation.updatedAt,
+        ageMinutes: d.lastLocation.updatedAt 
+          ? Math.round((Date.now() - new Date(d.lastLocation.updatedAt).getTime()) / 60000)
+          : null
+      } : null
+    }));
+
+    res.json({
+      totalDrivers: deliveryBoys.length,
+      withFcmToken: deliveryBoys.filter(d => d.fcmToken).length,
+      withLocation: deliveryBoys.filter(d => d.lastLocation).length,
+      drivers: status
+    });
+  } catch (error) {
+    console.error('Drivers status error:', error);
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// POST /api/admin/request-locations - Send push notification to all drivers to get their location
+router.post('/request-locations', async (req, res) => {
+  try {
+    // Get all active delivery boys with FCM tokens
+    const deliveryBoys = await DeliveryBoy.find({ 
+      status: 'active',
+      fcmToken: { $ne: null }
+    });
+
+    console.log(`📍 Found ${deliveryBoys.length} drivers with FCM tokens`);
+
+    const fcmTokens = deliveryBoys
+      .map(d => d.fcmToken)
+      .filter(token => token);
+
+    if (fcmTokens.length === 0) {
+      console.log('📍 No drivers with FCM tokens found');
+      return res.json({
+        message: 'No drivers with push notifications enabled',
+        sent: 0
+      });
+    }
+
+    console.log(`📍 Sending FCM to ${fcmTokens.length} tokens`);
+
+    // Send push notification to all drivers
+    const result = await sendLocationRequestToAll(fcmTokens);
+
+    console.log(`📍 FCM result: ${result?.successCount || 0} success, ${result?.failureCount || 0} failed`);
+
+    res.json({
+      message: `Location request sent to ${result?.successCount || 0} drivers`,
+      sent: result?.successCount || 0,
+      failed: result?.failureCount || 0,
+      total: fcmTokens.length
+    });
+  } catch (error) {
+    console.error('Request locations error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to request locations',
+      code: 'REQUEST_LOCATIONS_ERROR'
     });
   }
 });
