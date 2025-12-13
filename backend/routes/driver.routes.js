@@ -522,10 +522,10 @@ router.put('/profile', async (req, res) => {
   }
 });
 
-// POST /api/driver/location - Update driver location (every 10 seconds from app)
+// POST /api/driver/location - Update driver location (every 30 seconds from app)
 router.post('/location', async (req, res) => {
   try {
-    const { latitude, longitude } = req.body;
+    const { latitude, longitude, accuracy } = req.body;
     const driverId = req.user.userId;
 
     if (!latitude || !longitude) {
@@ -533,6 +533,15 @@ router.post('/location', async (req, res) => {
         error: true,
         message: 'Latitude and longitude are required',
         code: 'MISSING_LOCATION'
+      });
+    }
+
+    // Filter out very inaccurate locations (> 200m)
+    if (accuracy && accuracy > 200) {
+      return res.status(400).json({
+        error: true,
+        message: 'Location accuracy too low',
+        code: 'LOW_ACCURACY'
       });
     }
 
@@ -549,6 +558,7 @@ router.post('/location', async (req, res) => {
     const locationData = {
       latitude,
       longitude,
+      accuracy: accuracy || null,
       updatedAt: new Date()
     };
     deliveryBoy.lastLocation = locationData;
@@ -563,7 +573,7 @@ router.post('/location', async (req, res) => {
       location: locationData
     };
     
-    // Send to tracking admins first (priority)
+    // Send to tracking admins first (priority) - real-time update
     sendToTrackingAdmins(locationUpdate);
     
     // Also broadcast to all clients (for any page that might need it)
