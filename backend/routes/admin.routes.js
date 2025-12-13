@@ -240,6 +240,29 @@ router.get('/customers', async (req, res) => {
   }
 });
 
+// PUT /api/admin/customers/:id - Update a customer
+router.put('/customers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, houseFlatNumber, address } = req.body;
+    
+    const customer = await Customer.findByIdAndUpdate(
+      id,
+      { name, phone, houseFlatNumber, address },
+      { new: true }
+    );
+    
+    if (!customer) {
+      return res.status(404).json({ error: true, message: 'Customer not found' });
+    }
+    
+    res.json({ customer });
+  } catch (error) {
+    console.error('Update customer error:', error);
+    res.status(500).json({ error: true, message: 'Failed to update customer' });
+  }
+});
+
 // DELETE /api/admin/customers/:id - Delete a customer
 router.delete('/customers/:id', async (req, res) => {
   try {
@@ -966,6 +989,190 @@ router.delete('/delete-all-data', async (req, res) => {
       message: 'Failed to delete all data',
       code: 'DELETE_ALL_ERROR'
     });
+  }
+});
+
+// ============ PRODUCTS & BARCODE SCANNING ENDPOINTS ============
+const Product = require('../models/Product');
+const Scan = require('../models/Scan');
+
+// POST /api/admin/scan - Scan barcode and get product details
+router.post('/scan', async (req, res) => {
+  try {
+    const { barcode } = req.body;
+    
+    // Validate barcode: must be numeric and at least 6 digits
+    if (!barcode || !/^\d+$/.test(barcode) || barcode.length < 6) {
+      return res.status(400).json({ 
+        error: true, 
+        message: 'Invalid barcode format. Must be numeric with at least 6 digits.' 
+      });
+    }
+    
+    // Extract product_id (all digits except last 5) and weight (last 5 digits)
+    const product_id = barcode.slice(0, -5);
+    const weight_raw = barcode.slice(-5);
+    const weight_grams = parseInt(weight_raw, 10);
+    const weight_kg = weight_grams / 1000;
+    
+    // Find product by product_id
+    const product = await Product.findOne({ product_id, is_active: true });
+    
+    if (!product) {
+      return res.status(404).json({ 
+        error: true, 
+        message: 'Product not registered',
+        product_id,
+        weight_kg
+      });
+    }
+    
+    // Calculate total price (rounded to 2 decimal places)
+    const total_price = Math.round(weight_kg * product.price_per_kg * 100) / 100;
+    
+    // Save scan record
+    const scan = await Scan.create({
+      barcode,
+      product_id,
+      product_name: product.name,
+      weight_grams,
+      weight_kg,
+      price_per_kg: product.price_per_kg,
+      total_price
+    });
+    
+    res.json({
+      product_id,
+      product_name: product.name,
+      weight_grams,
+      weight_kg,
+      price_per_kg: product.price_per_kg,
+      total_price,
+      scan_id: scan._id
+    });
+  } catch (error) {
+    console.error('Scan barcode error:', error);
+    res.status(500).json({ error: true, message: 'Failed to process barcode' });
+  }
+});
+
+// GET /api/admin/products - Get all products
+router.get('/products', async (req, res) => {
+  try {
+    const { search, active } = req.query;
+    const query = {};
+    
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { product_id: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    if (active !== undefined) {
+      query.is_active = active === 'true';
+    }
+    
+    const products = await Product.find(query).sort({ name: 1 });
+    res.json({ products });
+  } catch (error) {
+    console.error('Get products error:', error);
+    res.status(500).json({ error: true, message: 'Failed to get products' });
+  }
+});
+
+// GET /api/admin/products/search - Search products by name or ID
+router.get('/products/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 1) {
+      return res.json({ products: [] });
+    }
+    
+    const products = await Product.find({
+      is_active: true,
+      $or: [
+        { name: { $regex: q, $options: 'i' } },
+        { product_id: { $regex: q, $options: 'i' } }
+      ]
+    }).limit(10);
+    
+    res.json({ products });
+  } catch (error) {
+    console.error('Search products error:', error);
+    res.status(500).json({ error: true, message: 'Failed to search products' });
+  }
+});
+
+// POST /api/admin/products - Create a new product
+router.post('/products', async (req, res) => {
+  try {
+    const { product_id, name, price_per_kg } = req.body;
+    
+    if (!product_id || !name || price_per_kg === undefined) {
+      return res.status(400).json({ 
+        error: true, 
+        message: 'Product ID, name, and price per kg are required' 
+      });
+    }
+    
+    // Check if product_id already exists
+    const existing = await Product.findOne({ product_id });
+    if (existing) {
+      return res.status(400).json({ 
+        error: true, 
+        message: 'Product ID already exists' 
+      });
+    }
+    
+    const product = await Product.create({
+      product_id: product_id.toString(),
+      name: name.trim(),
+      price_per_kg: parseFloat(price_per_kg)
+    });
+    
+    res.status(201).json({ product });
+  } catch (error) {
+    console.error('Create product error:', error);
+    res.status(500).json({ error: true, message: error.message || 'Failed to create product' });
+  }
+});
+
+// PUT /api/admin/products/:id - Update a product
+router.put('/products/:id', async (req, res) => {
+  try {
+    const { name, price_per_kg, is_active } = req.body;
+    
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { name, price_per_kg, is_active },
+      { new: true }
+    );
+    
+    if (!product) {
+      return res.status(404).json({ error: true, message: 'Product not found' });
+    }
+    
+    res.json({ product });
+  } catch (error) {
+    console.error('Update product error:', error);
+    res.status(500).json({ error: true, message: 'Failed to update product' });
+  }
+});
+
+// DELETE /api/admin/products/:id - Delete a product
+router.delete('/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findByIdAndDelete(req.params.id);
+    
+    if (!product) {
+      return res.status(404).json({ error: true, message: 'Product not found' });
+    }
+    
+    res.json({ message: 'Product deleted' });
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({ error: true, message: 'Failed to delete product' });
   }
 });
 
