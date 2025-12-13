@@ -25,8 +25,7 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for fast lookups
-productSchema.index({ product_id: 1 });
+// Index for text search (product_id already indexed via unique: true)
 productSchema.index({ name: 'text' });
 
 module.exports = mongoose.model('Product', productSchema);

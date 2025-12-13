@@ -7,6 +7,9 @@ const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const Address = require('../models/Address');
 const Customer = require('../models/Customer');
+const Product = require('../models/Product');
+const Scan = require('../models/Scan');
+const Note = require('../models/Note');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { generateOrderId } = require('../utils/helpers');
 const { broadcastToDrivers, sendToUser } = require('../websocket/websocket');
@@ -344,6 +347,72 @@ router.get('/dashboard', async (req, res) => {
     });
   }
 });
+
+// GET /api/admin/database-stats - Get database storage statistics
+router.get('/database-stats', async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const db = mongoose.connection.db;
+    
+    // Get database stats
+    const dbStats = await db.stats();
+    
+    // Get collection stats
+    const collections = await db.listCollections().toArray();
+    const collectionStats = [];
+    
+    for (const collection of collections) {
+      const stats = await db.collection(collection.name).stats();
+      collectionStats.push({
+        name: collection.name,
+        count: stats.count,
+        size: stats.size,
+        storageSize: stats.storageSize,
+        avgObjSize: stats.avgObjSize,
+        indexes: stats.nindexes,
+        totalIndexSize: stats.totalIndexSize
+      });
+    }
+    
+    // Sort by size
+    collectionStats.sort((a, b) => b.size - a.size);
+    
+    res.json({
+      database: {
+        name: dbStats.db,
+        collections: dbStats.collections,
+        dataSize: dbStats.dataSize,
+        storageSize: dbStats.storageSize,
+        indexSize: dbStats.indexSize,
+        totalSize: dbStats.dataSize + dbStats.indexSize,
+        avgObjSize: dbStats.avgObjSize
+      },
+      collections: collectionStats,
+      formatted: {
+        dataSize: formatBytes(dbStats.dataSize),
+        storageSize: formatBytes(dbStats.storageSize),
+        indexSize: formatBytes(dbStats.indexSize),
+        totalSize: formatBytes(dbStats.dataSize + dbStats.indexSize)
+      }
+    });
+  } catch (error) {
+    console.error('Database stats error:', error);
+    res.status(500).json({
+      error: true,
+      message: 'Failed to get database stats',
+      code: 'DATABASE_STATS_ERROR'
+    });
+  }
+});
+
+// Helper function to format bytes
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
 
 // POST /api/admin/orders
 router.post('/orders', async (req, res) => {
@@ -752,9 +821,11 @@ router.post('/delivery-boys', async (req, res) => {
 router.delete('/delivery-boys/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    console.log(`[DELETE] Deleting delivery boy: ${id}`);
 
     const deliveryBoy = await DeliveryBoy.findById(id);
     if (!deliveryBoy) {
+      console.log(`[DELETE] Delivery boy not found: ${id}`);
       return res.status(404).json({
         error: true,
         message: 'Delivery boy not found',
@@ -762,13 +833,17 @@ router.delete('/delivery-boys/:id', async (req, res) => {
       });
     }
 
+    console.log(`[DELETE] Found delivery boy: ${deliveryBoy.name}, userId: ${deliveryBoy.userId}`);
+
     // Delete the associated user account
     if (deliveryBoy.userId) {
-      await User.findByIdAndDelete(deliveryBoy.userId);
+      const deletedUser = await User.findByIdAndDelete(deliveryBoy.userId);
+      console.log(`[DELETE] User deleted: ${deletedUser ? 'Yes' : 'No'}`);
     }
 
     // Delete the delivery boy
-    await DeliveryBoy.findByIdAndDelete(id);
+    const deletedDB = await DeliveryBoy.findByIdAndDelete(id);
+    console.log(`[DELETE] DeliveryBoy deleted: ${deletedDB ? 'Yes' : 'No'}`);
 
     res.json({
       message: 'Delivery boy deleted successfully'
@@ -993,8 +1068,6 @@ router.delete('/delete-all-data', async (req, res) => {
 });
 
 // ============ PRODUCTS & BARCODE SCANNING ENDPOINTS ============
-const Product = require('../models/Product');
-const Scan = require('../models/Scan');
 
 // POST /api/admin/scan - Scan barcode and get product details
 router.post('/scan', async (req, res) => {
@@ -1009,11 +1082,22 @@ router.post('/scan', async (req, res) => {
       });
     }
     
-    // Extract product_id (all digits except last 5) and weight (last 5 digits)
-    const product_id = barcode.slice(0, -5);
-    const weight_raw = barcode.slice(-5);
-    const weight_grams = parseInt(weight_raw, 10);
-    const weight_kg = weight_grams / 1000;
+    let product_id, weight_raw, weight_grams, weight_kg;
+    
+    // Special case: 10-digit barcode with "00" at positions 4 & 5 (index 3 & 4)
+    // Example: 0730007690 -> product_id = "073", weight = "07690" grams
+    if (barcode.length === 10 && barcode[3] === '0' && barcode[4] === '0') {
+      product_id = barcode.slice(0, 3);  // First 3 digits
+      weight_raw = barcode.slice(5);     // Last 5 digits (skip the "00")
+      weight_grams = parseInt(weight_raw, 10);
+      weight_kg = weight_grams / 1000;
+    } else {
+      // Standard case: product_id = all except last 5, weight = last 5
+      product_id = barcode.slice(0, -5);
+      weight_raw = barcode.slice(-5);
+      weight_grams = parseInt(weight_raw, 10);
+      weight_kg = weight_grams / 1000;
+    }
     
     // Find product by product_id
     const product = await Product.findOne({ product_id, is_active: true });
@@ -1059,6 +1143,7 @@ router.post('/scan', async (req, res) => {
 // GET /api/admin/products - Get all products
 router.get('/products', async (req, res) => {
   try {
+    console.log('[GET /products] Request received');
     const { search, active } = req.query;
     const query = {};
     
@@ -1073,7 +1158,9 @@ router.get('/products', async (req, res) => {
       query.is_active = active === 'true';
     }
     
-    const products = await Product.find(query).sort({ name: 1 });
+    console.log('[GET /products] Query:', query);
+    const products = await Product.find(query).sort({ product_id: 1 });
+    console.log('[GET /products] Found', products.length, 'products');
     res.json({ products });
   } catch (error) {
     console.error('Get products error:', error);
@@ -1177,7 +1264,6 @@ router.delete('/products/:id', async (req, res) => {
 });
 
 // ============ NOTES ENDPOINTS ============
-const Note = require('../models/Note');
 
 // GET /api/admin/notes - Get all notes
 router.get('/notes', async (req, res) => {
